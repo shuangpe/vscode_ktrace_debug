@@ -151,6 +151,11 @@ export class MockRuntime extends EventEmitter {
 
 	constructor(private fileAccessor: FileAccessor) {
 		super();
+
+		// 预先创建scalar register容器，使其始终在变量视图中显示在顶部
+		const scalarPrefix = 's';
+		const prefixMap = new RuntimeVariable(`${scalarPrefix}`, []);
+		this.variables.set(scalarPrefix, prefixMap);
 	}
 
 	/**
@@ -404,22 +409,11 @@ export class MockRuntime extends EventEmitter {
 	}
 
 	public async getGlobalVariables(cancellationToken?: () => boolean ): Promise<RuntimeVariable[]> {
-
-		let a: RuntimeVariable[] = [];
-
-		for (let i = 0; i < 10; i++) {
-			a.push(new RuntimeVariable(`global_${i}`, i));
-			if (cancellationToken && cancellationToken()) {
-				break;
-			}
-			await timeout(1000);
-		}
-
-		return a;
+		return Array.from(this.variables, ([name, value]) => value);
 	}
 
 	public getLocalVariables(): RuntimeVariable[] {
-		return Array.from(this.variables, ([name, value]) => value);
+		return [];
 	}
 
 	public getLocalVariable(name: string): RuntimeVariable | undefined {
@@ -552,55 +546,73 @@ export class MockRuntime extends EventEmitter {
 
 		const line = this.getLine(ln);
 
-		// find variable accesses
-		let reg0 = /\$([a-z][a-z0-9]*)(=(false|true|[0-9]+(\.[0-9]+)?|\".*\"|\{.*\}))?/ig;
-		let matches0: RegExpExecArray | null;
-		while (matches0 = reg0.exec(line)) {
-			if (matches0.length === 5) {
+		// Match scalar registers (e.g., s4: 00000001)
+		const scalarRegExp = /(s\d+):\s*([0-9a-fA-F]+)/g;
+		let scalarMatch: RegExpExecArray | null;
+		while ((scalarMatch = scalarRegExp.exec(line)) !== null) {
+			const name = scalarMatch[1];
+			const value = parseInt(scalarMatch[2], 16); // Convert hex to decimal
 
-				let access: string | undefined;
+			let access: string | undefined;
+			if (this.variables.has(name)) {
+				access = 'write';
+			} else {
+				access = 'declare';
+			}
+			const match = name.match(/^([a-zA-Z]+)(\d+)$/);
+			if (!match) {
+				continue;
+			}
+			const prefix = match[1];
+			const number = parseInt(match[2], 10);
 
-				const name = matches0[1];
-				const value = matches0[3];
+			// Ensure the prefix map exists in variables
+			let prefixMap = this.variables.get(prefix);
+			if (!prefixMap) {
+				// 如果不是在构造函数中预先创建的，则在这里创建
+				prefixMap = new RuntimeVariable(prefix, []);
+				this.variables.set(prefix, prefixMap);
+			}
 
-				let v = new RuntimeVariable(name, value);
-
-				if (value && value.length > 0) {
-
-					if (value === 'true') {
-						v.value = true;
-					} else if (value === 'false') {
-						v.value = false;
-					} else if (value[0] === '"') {
-						v.value = value.slice(1, -1);
-					} else if (value[0] === '{') {
-						v.value = [
-							new RuntimeVariable('fBool', true),
-							new RuntimeVariable('fInteger', 123),
-							new RuntimeVariable('fString', 'hello'),
-							new RuntimeVariable('flazyInteger', 321)
-						];
-					} else {
-						v.value = parseFloat(value);
-					}
-
-					if (this.variables.has(name)) {
-						// the first write access to a variable is the "declaration" and not a "write access"
-						access = 'write';
-					}
-					this.variables.set(name, v);
-				} else {
-					if (this.variables.has(name)) {
-						// variable must exist in order to trigger a read access
-						access = 'read';
-					}
+			if (prefixMap.value && Array.isArray(prefixMap.value)) {
+				while (prefixMap.value.length <= number) {
+					prefixMap.value.push(new RuntimeVariable(`${prefix}${prefixMap.value.length}`, 0));
 				}
+				prefixMap.value[number] = new RuntimeVariable(`${prefix}${number}`, value);
+			}
 
-				const accessType = this.breakAddresses.get(name);
-				if (access && accessType && accessType.indexOf(access) >= 0) {
-					this.sendEvent('stopOnDataBreakpoint', access);
-					return true;
-				}
+			const accessType = this.breakAddresses.get(name);
+			if (access && accessType && accessType.indexOf(access) >= 0) {
+				this.sendEvent('stopOnDataBreakpoint', access);
+				return true;
+			}
+		}
+
+		// Match vector registers (e.g., r4: 00000000 00000000 ... 32 values)
+		const vectorRegExp = /(r\d+):\s*((?:[0-9a-fA-F]+\s*){32})/g;
+		let vectorMatch: RegExpExecArray | null;
+		while ((vectorMatch = vectorRegExp.exec(line)) !== null) {
+			const name = vectorMatch[1];
+			const values = vectorMatch[2]
+				.trim()
+				.split(/\s+/)
+				.map(hex => parseInt(hex, 16)); // Convert each hex value to decimal
+
+			let access: string | undefined;
+			if (this.variables.has(name)) {
+				access = 'write';
+			} else {
+				access = 'declare';
+			}
+
+			// Create an array of RuntimeVariable objects, each representing a single value
+			const runtimeVars = values.reverse().map((val, i) => new RuntimeVariable(`[${i}]`, val));
+			this.variables.set(name, new RuntimeVariable(name, runtimeVars));
+
+			const accessType = this.breakAddresses.get(name);
+			if (access && accessType && accessType.indexOf(access) >= 0) {
+				this.sendEvent('stopOnDataBreakpoint', access);
+				return true;
 			}
 		}
 

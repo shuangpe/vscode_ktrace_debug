@@ -8,7 +8,7 @@
 			"type": "mock",
 			"request": "launch",
 			"name": "Debug readme.md",
-			"program": "${workspaceFolder}/readme.md",
+			"program": "${workspaceFolder}/thread_log_gid(0,0,0)_lid(0,0,0).txt",
 			"stopOnEntry": true,
 			"trace": false
 		},
@@ -16,7 +16,7 @@
 			"type": "mock",
 			"request": "attach",
 			"name": "Attach readme.md",
-			"program": "${workspaceFolder}/readme.md",
+			"program": "${workspaceFolder}/thread_log_gid(0,0,0)_lid(0,0,0).txt",
 			"stopOnEntry": true,
 			"trace": false
 		}
